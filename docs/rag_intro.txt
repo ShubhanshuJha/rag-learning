@@ -1,0 +1,9 @@
+Retrieval-Augmented Generation, or RAG, is an architecture that combines a retrieval system with a language model. Instead of relying solely on what the model learned during training, RAG first searches an external knowledge base for relevant information, then feeds that information to the model as context before it generates a response.
+
+The retrieval step typically works by converting text into vector embeddings, numerical representations that capture semantic meaning. A vector database stores these embeddings and can quickly find the most similar vectors to a given query, even if the query and the stored text share no exact words in common.
+
+One of the main benefits of RAG is reducing hallucination, which happens when a language model generates plausible-sounding but factually incorrect information. By grounding responses in retrieved documents, RAG systems can cite sources and are more likely to say they do not know an answer when the retrieved context does not contain it.
+
+Chunking is the process of splitting long documents into smaller pieces before embedding them. This matters because embedding models have limited input length, and because smaller, focused chunks tend to produce more precise retrieval matches than one giant embedding for an entire document. Chunk size and overlap between chunks are both tunable parameters that affect retrieval quality.
+
+Reranking is an additional step some RAG systems use after initial retrieval. A reranking model re-scores the top candidates returned by the vector search, filtering out chunks that are only superficially similar and keeping the ones that are actually relevant to the query. This helps prevent irrelevant context from confusing the generation step.
