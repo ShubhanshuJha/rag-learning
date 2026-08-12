@@ -54,7 +54,7 @@ async def ingest_document(
         vector_store.ensure_collection(client)
         existing_hashes = vector_store.existing_hashes_for_doc(client, doc_id)
 
-        objects_to_insert = []
+        new_objects = []
         skipped = 0
 
         for chunk in chunks:
@@ -63,7 +63,7 @@ async def ingest_document(
                 skipped += 1
                 continue
 
-            objects_to_insert.append({
+            new_objects.append({
                 "text": chunk.text,
                 "doc_id": doc_id,
                 "doc_title": title,
@@ -72,17 +72,21 @@ async def ingest_document(
                 "content_hash": content_hash,
             })
 
-        vector_store.insert_chunks(client, objects_to_insert)
+        to_insert_now = new_objects[: settings.max_chunks_per_ingest_call]
+        remaining = len(new_objects) - len(to_insert_now)
+
+        vector_store.insert_chunks(client, to_insert_now)
 
     logger.info(
-        "Ingested doc_id=%s: %d pages, %d chunks created, %d skipped as duplicates",
-        doc_id, len(pages), len(objects_to_insert), skipped,
+        "Ingested doc_id=%s: %d pages, %d chunks inserted this call, %d skipped as duplicates, %d remaining",
+        doc_id, len(pages), len(to_insert_now), skipped, remaining,
     )
 
     return IngestResponse(
         doc_id=doc_id,
         pages_processed=len(pages),
-        chunks_created=len(objects_to_insert),
+        chunks_created=len(to_insert_now),
         chunks_skipped_duplicate=skipped,
-        status="success",
+        chunks_remaining=remaining,
+        status="success" if remaining == 0 else "partial",
     )

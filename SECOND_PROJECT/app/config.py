@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     similarity_threshold: float = 0.75
     chunk_size: int = 1000
     chunk_overlap: int = 150
+    max_chunks_per_ingest_call: int = 150
 
     # Upload limits
     max_file_size_mb: int = 50

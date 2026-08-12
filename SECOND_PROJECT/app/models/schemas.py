@@ -16,6 +16,7 @@ class IngestResponse(BaseModel):
     chunks_created: int
     chunks_skipped_duplicate: int
     status: str
+    chunks_remaining: int
 
 
 class AskRequest(BaseModel):
