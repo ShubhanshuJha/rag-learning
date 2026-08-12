@@ -11,7 +11,7 @@ Built and run entirely from a GitHub Codespace — the original plan was a local
 | Project | What it is | Status |
 |---|---|---|
 | [`FIRST_PROJECT/`](./FIRST_PROJECT/README.md) | RAG fundamentals lab — one script, every RAG stage exposed as plain, inspectable code | Working, complete |
-| [`SECOND_PROJECT/`](./SECOND_PROJECT/README.md) | **Docent** — a real ingest + ask service with a web UI, built from what `FIRST_PROJECT` taught | Working, actively extended |
+| [`SECOND_PROJECT/`](./DOCENT_RAG_PROJECT/README.md) | **Docent** — a real ingest + ask service with a web UI, built from what `FIRST_PROJECT` taught | Working, actively extended |
 
 Start with `FIRST_PROJECT` if the goal is understanding *how* RAG works. Go straight to `SECOND_PROJECT` (Docent) if the goal is *using* a working RAG tool.
 
