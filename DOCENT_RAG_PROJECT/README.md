@@ -1,53 +1,75 @@
-# AWS DMS Documentation Assistant
+# Docent
 
-A service that turns a technical PDF (e.g., the AWS DMS User Guide) into a queryable knowledge base — populate it once via an ingestion endpoint, then ask natural-language questions against it via a second endpoint. Built as a follow-up to `FIRST_PROJECT`, moving from a single learning script to a properly separated ingestion service + query service, each behind its own HTTP endpoint.
+*A docent is a knowledgeable guide — someone who has read the whole exhibit and answers your questions by walking straight to the display that has the answer. That's what this is: it reads an entire technical manual once, then answers your questions grounded strictly in what it read, always pointing back to the exact page.*
+
+A service that turns a technical PDF (e.g., the AWS DMS User Guide) into a queryable knowledge base — populate it once via an ingestion endpoint, then ask natural-language questions against it via a second endpoint, or through the bundled web UI. Built as a follow-up to `FIRST_PROJECT`, moving from a single learning script to a properly separated ingestion service + query service, each behind its own HTTP endpoint.
 
 > For core RAG concepts (embedding, chunking, retrieval, augmentation, generation, hallucination, grounding, etc.), see `../FIRST_PROJECT/README.md` — this document assumes those definitions and focuses on this project's architecture and contract.
 
 ---
 
+## The Name
+
+**Docent** was chosen deliberately over something literal like "DMS Doc Assistant," for two reasons:
+
+1. **The product is document-agnostic.** The backend has no idea what a PDF is "about" — it parses, chunks, embeds, and retrieves the same way regardless of subject. The AWS DMS User Guide is just the manual currently loaded into it; feed it a different PDF and it becomes a docent for that instead. Naming it after the AWS-specific use case would have been misleading about what the software actually does.
+2. **The metaphor matches the mechanism, not just the vibe.** A real docent doesn't improvise from general knowledge when asked something obscure — a good one says "that's not covered in this exhibit" rather than guessing. That's exactly the grounding behavior this project enforces deliberately (see **Key Design Decisions** below): refuse to answer from the model's own training knowledge, answer only from what was actually ingested, and cite the page every time.
+
+---
+
 ## Status
 
-**Scaffolding stage.** Folder structure, naming conventions, and API contract are defined below. Implementation is being built incrementally — this README will be updated as each piece lands (ingestion → dedup → ask → threshold handling → logging, per the build order at the bottom).
+**Core pipeline built and working end to end.** `/health`, `/ingest` (with resumable, bounded batches and content-hash dedup), and `/ask` (with similarity-threshold grounding) are implemented, along with a bundled static web UI. Embedding and generation are handled via direct calls to Ollama from the application itself, rather than through Weaviate's built-in Ollama modules — see **Key Design Decisions** for why.
 
 ---
 
 ## What This Project Does
 
-Two responsibilities, cleanly split into two endpoints instead of one script:
+Two responsibilities, cleanly split into two endpoints instead of one script — plus a bundled UI on top:
 
-1. **Ingest** — accepts a PDF, extracts text page-by-page, chunks it, embeds each chunk, and stores it in Weaviate with metadata (source doc, page number, chunk index).
-2. **Ask** — accepts a natural-language question, embeds it, retrieves the most relevant stored chunks, and generates an answer grounded strictly in the ingested documentation — refusing to answer from the model's own general knowledge when the docs don't cover something.
+1. **Ingest** — accepts a PDF, extracts text page-by-page, chunks it, embeds each chunk (via a direct call to Ollama), and stores it in Weaviate with metadata (source doc, page number, chunk index).
+2. **Ask** — accepts a natural-language question, embeds it, retrieves the most relevant stored chunks from Weaviate, and generates an answer (via a direct call to Ollama) grounded strictly in the ingested documentation — refusing to answer from the model's own general knowledge when the docs don't cover something.
 
 ```
+        ┌───────────────────────┐
+        │   Docent (browser)     │
+        │   frontend/index.html  │
+        └───────────┬───────────┘
+                     │
+                    HTTP
+                     │
                     ┌─────────────────────────────────────┐
                     │            FastAPI App               │
                     │                                       │
   PDF file  ───────►│  POST /ingest                        │
-                    │    → Parse PDF → Chunk → Embed        │──┐
+                    │    → Parse PDF → Chunk → Embed(*)     │──┐
                     │    → Dedup → Store in Weaviate         │  │
                     │                                       │  │
   Question  ───────►│  POST /ask                            │  │
-                    │    → Embed query → Retrieve → Augment  │  │
-                    │    → Generate → Return answer+sources  │  │
+                    │    → Embed(*) query → Retrieve         │  │
+                    │    → Generate(*) → Return answer+srcs  │  │
                     │                                       │  │
                     │  GET  /health                          │  │
                     └─────────────────────────────────────┘  │
                                                                 │
                     ┌──────────────┐          ┌───────────────┐
-                    │   Weaviate    │◄─────────┤    Ollama      │
-                    │  (vector DB)  │          │ (embed + LLM)  │
+                    │   Weaviate    │          │    Ollama      │
+                    │ (vector index │          │ (embed + LLM,  │
+                    │  only — no    │          │  called        │
+                    │  Ollama calls │          │  directly by   │
+                    │  of its own)  │◄─(*)─────┤  our app code) │
                     └──────────────┘          └───────────────┘
 ```
+**(\*)** Embedding and generation calls go straight from this app's code to Ollama via `httpx`, not through Weaviate's built-in `text2vec-ollama` / `generative-ollama` modules. See **Key Design Decisions**.
 
 ---
 
 ## Folder Structure
 
 ```
-SECOND_PROJECT/
+SECOND_PROJECT/               # folder name kept as-is; "Docent" is the product name
 ├── app/
-│   ├── main.py                    # FastAPI app entrypoint, route registration
+│   ├── main.py                    # FastAPI app entrypoint, route registration, serves frontend/
 │   ├── config.py                  # Settings loaded from environment
 │   ├── routers/
 │   │   ├── ingest_router.py       # POST /ingest
@@ -55,14 +77,18 @@ SECOND_PROJECT/
 │   ├── services/
 │   │   ├── pdf_parser.py          # PDF → text + page numbers
 │   │   ├── chunker.py             # Recursive/semantic chunking
-│   │   ├── embedding_service.py   # Wraps Ollama embedding calls
-│   │   ├── vector_store.py        # Wraps Weaviate client (create/query/dedupe)
-│   │   └── generation_service.py  # Wraps Ollama generation calls
+│   │   ├── embedding_service.py   # Direct Ollama /api/embed calls
+│   │   ├── vector_store.py        # Weaviate client (create/query/dedupe/insert)
+│   │   └── generation_service.py  # Direct Ollama /api/generate calls + grounding
 │   ├── models/
 │   │   └── schemas.py             # Pydantic request/response models
 │   └── utils/
 │       ├── hashing.py             # content-hash dedup helper
 │       └── logger.py              # logging setup
+├── frontend/
+│   └── index.html                 # Docent web UI — single static file, no build step
+├── scripts/
+│   └── ingest_large_pdf.py        # loops /ingest until a large PDF is fully stored
 ├── docs/                          # sample PDFs for local testing
 ├── tests/
 │   ├── test_ingest.py
@@ -104,13 +130,14 @@ file: <binary PDF>
 doc_title: "AWS DMS User Guide"     # optional, defaults to filename
 ```
 ```json
-// 200 OK
+// 200 OK — may take several calls for large PDFs; see chunks_remaining
 {
   "doc_id": "dms-user-guide-v1",
   "pages_processed": 142,
-  "chunks_created": 587,
+  "chunks_created": 150,
   "chunks_skipped_duplicate": 0,
-  "status": "success"
+  "chunks_remaining": 437,
+  "status": "partial"
 }
 ```
 
@@ -168,6 +195,8 @@ Returns `503` if either dependency is unreachable.
 
 **"Not in the docs" handling** — the generation prompt explicitly instructs the model to answer only from retrieved context and say so when it's insufficient, *and* a similarity-threshold check runs before generation is even called: if the best retrieved match scores below the threshold, `/ask` returns `answer: null` without spending a generation call at all. This matters specifically for AWS documentation — `llama3.2` likely has generic AWS knowledge from training and will confidently answer from memory unless explicitly blocked from doing so.
 
+**Direct Ollama calls instead of Weaviate's built-in modules** — the first working version used Weaviate's `text2vec-ollama` and `generative-ollama` modules, which call Ollama *internally* on Weaviate's behalf. On CPU-only, resource-constrained hardware, this repeatedly failed with `context deadline exceeded` — a fixed, non-configurable ~51–60s timeout inside those modules that no client-side setting can raise. The fix: Weaviate is now used purely as a vector index (`Configure.Vectors.self_provided()`), and `embedding_service.py` / `generation_service.py` call Ollama's `/api/embed` and `/api/generate` endpoints directly via `httpx`, with a timeout this application fully controls. Slower CPU inference just takes longer now instead of failing outright.
+
 ---
 
 ## Environment Variables (`.env.example`)
@@ -178,6 +207,9 @@ OLLAMA_API_ENDPOINT=http://ollama:11434
 EMBEDDING_MODEL=nomic-embed-text
 GENERATION_MODEL=llama3.2
 SIMILARITY_THRESHOLD=0.75
+CHUNK_SIZE=1000
+CHUNK_OVERLAP=150
+MAX_CHUNKS_PER_INGEST_CALL=150
 MAX_FILE_SIZE_MB=50
 ```
 
@@ -193,7 +225,13 @@ docker compose exec ollama ollama pull llama3.2
 docker compose exec api pip install -r requirements.txt   # or built into the image, see Dockerfile
 ```
 
-Once running, interactive API docs are available at `http://localhost:8000/docs` (FastAPI auto-generates this) — usable directly from a browser tab in Codespaces, including on a phone, without needing a separate API client.
+Once running, open Docent itself in the browser — via the Codespace **Ports** tab, **Open in Browser** on port `8000`. Interactive API docs are also available at `http://localhost:8000/docs` if you want to test endpoints directly.
+
+For large PDFs, use the resumable ingest script instead of a single `curl` call:
+```bash
+python3 scripts/ingest_large_pdf.py docs/AWS_DMS_Documentation.pdf "AWS DMS User Guide"
+```
+Safe to interrupt and re-run — already-ingested chunks are skipped via content-hash dedup.
 
 ---
 
