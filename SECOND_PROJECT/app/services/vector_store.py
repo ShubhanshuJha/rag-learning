@@ -16,6 +16,7 @@ from contextlib import contextmanager
 
 import weaviate
 from weaviate.classes.config import DataType, Property
+from weaviate.classes.init import AdditionalConfig, Timeout
 from weaviate.classes.query import Filter
 
 from app.config import settings
@@ -25,6 +26,13 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 COLLECTION_NAME = "DocChunks"
+
+# Chunks are inserted in batches of this size rather than all at once.
+# Each object triggers an Ollama embedding call server-side, which is slow
+# on CPU — a single gRPC call carrying thousands of objects reliably hits
+# the default deadline. Smaller batches keep each call well within timeout
+# and let you see progress in `docker compose logs -f api` on large PDFs.
+INSERT_BATCH_SIZE = 50
 
 
 def _host_from_url(url: str) -> str:
@@ -43,6 +51,11 @@ def get_client():
         host=_host_from_url(settings.weaviate_url),
         port=8080,
         grpc_port=50051,
+        additional_config=AdditionalConfig(
+            # insert=120s covers a 50-object batch comfortably even on a
+            # cold/CPU-only Ollama; query=60s covers a single /ask retrieval.
+            timeout=Timeout(init=30, query=60, insert=120)
+        ),
     )
     try:
         yield client
@@ -94,15 +107,31 @@ def delete_doc(client, doc_id: str) -> None:
 
 
 def insert_chunks(client, objects: list[dict]) -> None:
-    """Batch-insert new chunk objects.
+    """Insert new chunk objects in batches of INSERT_BATCH_SIZE.
 
     Caller is responsible for having already filtered out duplicates via
     existing_hashes_for_doc() — this function does not check again.
+    Inserting in smaller batches (rather than one call for the whole
+    document) avoids gRPC DEADLINE_EXCEEDED on large PDFs, since each
+    object requires a real embedding call to Ollama before it's stored.
     """
     if not objects:
         return
+
     collection = client.collections.get(COLLECTION_NAME)
-    collection.data.insert_many(objects)
+    total = len(objects)
+
+    for start in range(0, total, INSERT_BATCH_SIZE):
+        batch = objects[start:start + INSERT_BATCH_SIZE]
+        result = collection.data.insert_many(batch)
+
+        if result.has_errors:
+            logger.warning(
+                "Batch %d-%d: %d of %d objects failed to insert — see result.errors",
+                start, start + len(batch), len(result.errors), len(batch),
+            )
+        else:
+            logger.info("Inserted batch %d-%d of %d chunks", start, start + len(batch), total)
 
 
 def get_collection(client):
