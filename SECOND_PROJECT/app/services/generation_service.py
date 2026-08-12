@@ -1,22 +1,22 @@
 """
 Generation service.
 
-Wraps Weaviate's `generate.near_text` call (which itself calls Ollama for
-generation) with two safeguards:
-
-1. A strict grounding instruction, so the model doesn't fall back on its
-   own general AWS knowledge when the ingested docs don't cover something.
-2. A similarity-threshold check on the best retrieved match — if nothing
-   in the corpus is actually relevant, we skip the generation call
-   entirely rather than let the model guess.
+Retrieval uses Weaviate's near_vector (against a query embedding we
+compute ourselves via embedding_service). Generation calls Ollama's
+/api/generate directly via httpx, with a timeout we control — this
+replaces Weaviate's generative-ollama module, which has the same fixed,
+non-configurable internal timeout that caused every ingest failure.
+Weaviate is now purely a vector index in this service; it never talks
+to Ollama itself.
 """
 
 from dataclasses import dataclass
 
-from weaviate.classes.generate import GenerativeConfig
+import httpx
 from weaviate.classes.query import MetadataQuery
 
 from app.config import settings
+from app.services import embedding_service
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -31,13 +31,6 @@ GROUNDING_INSTRUCTION = (
 )
 
 
-def get_generative_config():
-    return GenerativeConfig.ollama(
-        api_endpoint=settings.ollama_api_endpoint,
-        model=settings.generation_model,
-    )
-
-
 @dataclass
 class GroundedAnswer:
     answer: str | None
@@ -45,15 +38,23 @@ class GroundedAnswer:
     reason: str | None
 
 
+def _call_ollama_generate(prompt: str, timeout_seconds: float = 300.0) -> str:
+    url = f"{settings.ollama_api_endpoint}/api/generate"
+    response = httpx.post(
+        url,
+        json={"model": settings.generation_model, "prompt": prompt, "stream": False},
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    return response.json()["response"]
+
+
 def generate_grounded_answer(collection, question: str, top_k: int) -> GroundedAnswer:
-    """Retrieve the top_k most relevant chunks for `question`, and only call
-    the LLM if the best match clears settings.similarity_threshold.
-    """
-    response = collection.generate.near_text(
-        query=question,
+    query_vector = embedding_service.embed_texts([question])[0]
+
+    response = collection.query.near_vector(
+        near_vector=query_vector,
         limit=top_k,
-        grouped_task=GROUNDING_INSTRUCTION,
-        generative_provider=get_generative_config(),
         return_metadata=MetadataQuery(certainty=True),
     )
 
@@ -70,6 +71,16 @@ def generate_grounded_answer(collection, question: str, top_k: int) -> GroundedA
     if best_certainty < settings.similarity_threshold:
         return GroundedAnswer(answer=None, sources=[], reason=NOT_FOUND_MESSAGE)
 
+    context_text = "\n\n".join(obj.properties["text"] for obj in response.objects)
+    prompt = (
+        f"{GROUNDING_INSTRUCTION}\n\n"
+        f"Context:\n{context_text}\n\n"
+        f"Question: {question}\n"
+        f"Answer:"
+    )
+
+    answer_text = _call_ollama_generate(prompt)
+
     sources = [
         {
             "doc": obj.properties.get("doc_title", "unknown"),
@@ -79,4 +90,4 @@ def generate_grounded_answer(collection, question: str, top_k: int) -> GroundedA
         for obj in response.objects
     ]
 
-    return GroundedAnswer(answer=response.generative.text, sources=sources, reason=None)
+    return GroundedAnswer(answer=answer_text, sources=sources, reason=None)

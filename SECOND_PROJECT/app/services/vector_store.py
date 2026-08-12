@@ -1,38 +1,34 @@
 """
 Vector store service.
 
-Owns the Weaviate collection lifecycle for this project: creating the
-"DocChunks" collection with an explicit schema, checking which content
-hashes already exist for a doc_id (dedup), deleting a document's prior
-chunks before re-ingestion, and inserting new chunks.
-
-NOTE: weaviate.connect_to_local() expects a bare host, not a full URL —
-_host_from_url() strips the scheme from WEAVIATE_URL for that reason.
-Ports are hardcoded to match docker-compose.yml (8080 HTTP / 50051 gRPC);
-if you ever change those in compose, update them here too.
+Weaviate is used purely as a vector index here — collection creation
+uses self_provided vectors (see embedding_service.get_vectorizer_config),
+and every insert supplies its own precomputed vector. Weaviate never
+calls Ollama internally, which is what removes the fixed, non-
+configurable timeout that caused every prior ingest failure.
 """
 
 from contextlib import contextmanager
 
+import time
+
 import weaviate
 from weaviate.classes.config import DataType, Property
+from weaviate.classes.data import DataObject
 from weaviate.classes.init import AdditionalConfig, Timeout
 from weaviate.classes.query import Filter
 
 from app.config import settings
+from app.services import embedding_service
 from app.services.embedding_service import get_vectorizer_config
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 COLLECTION_NAME = "DocChunks"
-
-# Chunks are inserted in batches of this size rather than all at once.
-# Each object triggers an Ollama embedding call server-side, which is slow
-# on CPU — a single gRPC call carrying thousands of objects reliably hits
-# the default deadline. Smaller batches keep each call well within timeout
-# and let you see progress in `docker compose logs -f api` on large PDFs.
-INSERT_BATCH_SIZE = 50
+INSERT_BATCH_SIZE = 20
+MAX_BATCH_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 5
 
 
 def _host_from_url(url: str) -> str:
@@ -41,19 +37,11 @@ def _host_from_url(url: str) -> str:
 
 @contextmanager
 def get_client():
-    """Context-managed Weaviate client connection.
-
-    Usage:
-        with get_client() as client:
-            ...
-    """
     client = weaviate.connect_to_local(
         host=_host_from_url(settings.weaviate_url),
         port=8080,
         grpc_port=50051,
         additional_config=AdditionalConfig(
-            # insert=120s covers a 50-object batch comfortably even on a
-            # cold/CPU-only Ollama; query=60s covers a single /ask retrieval.
             timeout=Timeout(init=30, query=60, insert=120)
         ),
     )
@@ -64,7 +52,6 @@ def get_client():
 
 
 def ensure_collection(client) -> None:
-    """Create the DocChunks collection if it doesn't already exist."""
     if client.collections.exists(COLLECTION_NAME):
         return
 
@@ -84,10 +71,6 @@ def ensure_collection(client) -> None:
 
 
 def existing_hashes_for_doc(client, doc_id: str) -> set[str]:
-    """Return content_hash values already stored for a given doc_id, so
-    ingestion can skip chunks that are already present instead of
-    duplicating them.
-    """
     collection = client.collections.get(COLLECTION_NAME)
     response = collection.query.fetch_objects(
         filters=Filter.by_property("doc_id").equal(doc_id),
@@ -98,23 +81,37 @@ def existing_hashes_for_doc(client, doc_id: str) -> set[str]:
 
 
 def delete_doc(client, doc_id: str) -> None:
-    """Delete every chunk belonging to doc_id — call this before
-    re-ingesting an updated version of a document you've already ingested.
-    """
     collection = client.collections.get(COLLECTION_NAME)
     collection.data.delete_many(where=Filter.by_property("doc_id").equal(doc_id))
     logger.info("Deleted existing chunks for doc_id=%s", doc_id)
 
 
-def insert_chunks(client, objects: list[dict]) -> None:
-    """Insert new chunk objects in batches of INSERT_BATCH_SIZE.
+def _insert_batch_with_retry(collection, batch, batch_label: str) -> None:
+    last_error = None
+    for attempt in range(1, MAX_BATCH_RETRIES + 1):
+        try:
+            result = collection.data.insert_many(batch)
+            if result.has_errors:
+                logger.warning(
+                    "%s: %d of %d objects failed — %s",
+                    batch_label, len(result.errors), len(batch), result.errors,
+                )
+            else:
+                logger.info("%s: inserted %d chunks", batch_label, len(batch))
+            return
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "%s: attempt %d/%d failed (%s) — retrying in %ds",
+                batch_label, attempt, MAX_BATCH_RETRIES, exc, RETRY_BACKOFF_SECONDS,
+            )
+            time.sleep(RETRY_BACKOFF_SECONDS)
 
-    Caller is responsible for having already filtered out duplicates via
-    existing_hashes_for_doc() — this function does not check again.
-    Inserting in smaller batches (rather than one call for the whole
-    document) avoids gRPC DEADLINE_EXCEEDED on large PDFs, since each
-    object requires a real embedding call to Ollama before it's stored.
-    """
+    logger.error("%s: gave up after %d attempts", batch_label, MAX_BATCH_RETRIES)
+    raise last_error
+
+
+def insert_chunks(client, objects: list[dict]) -> None:
     if not objects:
         return
 
@@ -123,15 +120,16 @@ def insert_chunks(client, objects: list[dict]) -> None:
 
     for start in range(0, total, INSERT_BATCH_SIZE):
         batch = objects[start:start + INSERT_BATCH_SIZE]
-        result = collection.data.insert_many(batch)
+        label = f"batch {start}-{start + len(batch)} of {total}"
 
-        if result.has_errors:
-            logger.warning(
-                "Batch %d-%d: %d of %d objects failed to insert — see result.errors",
-                start, start + len(batch), len(result.errors), len(batch),
-            )
-        else:
-            logger.info("Inserted batch %d-%d of %d chunks", start, start + len(batch), total)
+        texts = [obj["text"] for obj in batch]
+        vectors = embedding_service.embed_texts(texts)
+
+        data_objects = [
+            DataObject(properties=props, vector=vector)
+            for props, vector in zip(batch, vectors)
+        ]
+        _insert_batch_with_retry(collection, data_objects, label)
 
 
 def get_collection(client):
