@@ -45,7 +45,7 @@ rag-learning/
 │   ├── docker-compose.yml
 │   └── README.md
 │
-└── SECOND_PROJECT/         # Docent — ingest + ask service with a UI
+└── DOCENT_RAG_PROJECT/         # Docent — ingest + ask service with a UI
     ├── app/
     ├── frontend/
     ├── scripts/
