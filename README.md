@@ -61,7 +61,7 @@ Each project is self-contained with its own `docker-compose.yml` — they don't 
 ## Getting started
 
 ```bash
-cd FIRST_PROJECT     # or SECOND_PROJECT
+cd FIRST_PROJECT     # or DOCENT_RAG_PROJECT
 cp .env.example .env  # SECOND_PROJECT only
 docker compose up -d
 ```
