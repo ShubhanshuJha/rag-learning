@@ -18,7 +18,7 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 app = FastAPI(
-    title="AWS DMS Documentation Assistant",
+    title="DOCENT AI Assistant",
     description="Ingest technical PDFs and ask grounded questions against them.",
     version="0.1.0",
 )
@@ -52,3 +52,4 @@ async def health_check(response: Response):
         response.status_code = 503
 
     return HealthResponse(weaviate=weaviate_status, ollama=ollama_status)
+
