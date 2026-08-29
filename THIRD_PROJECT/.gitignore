@@ -1,0 +1,24 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+myvenv/
+venv/
+.venv/
+
+# Generated vector index — rebuildable from data/, and large + binary
+vector_store/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

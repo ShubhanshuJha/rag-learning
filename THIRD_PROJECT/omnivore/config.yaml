@@ -1,0 +1,81 @@
+# =============================================================================
+# Omnivore configuration
+# =============================================================================
+#
+# Every tunable parameter lives here. Nothing in this file is a secret —
+# API keys stay in .env and are referenced by variable name only.
+#
+# Relative paths resolve against THIS FILE's directory (omnivore/), not the
+# working directory, so main.py can be launched from anywhere. Note that the
+# legacy app.py still resolves its own hardcoded '../data' against the CWD and
+# therefore still has to be started from src/.
+#
+# Point at a different file with the OMNIVORE_CONFIG environment variable:
+#     $env:OMNIVORE_CONFIG = "C:\path\to\other.yaml"
+
+app:
+  host: 127.0.0.1
+  port: 5000
+  debug: true              # never leave this on outside local development
+
+data:
+  # Root of the document tree, walked recursively at ingest time.
+  dir: data
+
+vector_store:
+  collection: omnivore_docs        # one collection per corpus; switch freely
+  persist_directory: data/vector_store
+
+  # cosine | l2 | ip. Cosine is correct for normalized text embeddings;
+  # Chroma's own default is l2, which makes 1-distance similarities come out
+  # negative so every result falls below min_score.
+  #
+  # Baked into the HNSW index at creation — changing it requires deleting the
+  # collection and re-ingesting, otherwise the old index is silently kept.
+  distance_metric: cosine
+
+embedding:
+  # Ollama tag when use_ollama is true, HuggingFace name when false.
+  # Changing this invalidates an existing index — delete the persist_directory
+  # and re-ingest, or queries will be embedded in a different vector space
+  # than the stored chunks.
+  model: all-minilm
+  use_ollama: true
+
+  batch_size: 256          # texts per Ollama embed request
+  # Ollama's model subprocess can die mid-run (memory pressure, antivirus),
+  # surfacing as "connection refused". These control the recovery.
+  max_retries: 3           # attempts per batch before giving up
+  retry_delay: 2.0         # seconds before retry, multiplied by attempt number
+  batch_delay: 0.3         # pause between successful batches
+
+chunking:
+  # 1500/200 suits prose and technical docs. Dense reference material and
+  # Q&A content generally do better nearer 800/150. Keep overlap at roughly
+  # 10-15% of chunk_size so facts spanning a boundary survive intact.
+  chunk_size: 1500
+  chunk_overlap: 200
+
+llm:
+  backend: ollama          # ollama | groq
+  temperature: 0.1         # low on purpose: RAG answers should be extractive
+  max_tokens: 1024
+  ollama:
+    model: gemma2:9b
+  groq:
+    model: gemma2-9b-it
+    # Name of the environment variable holding the key — NOT the key itself.
+    api_key_env: GROQ_API_KEY
+
+retrieval:
+  top_k: 5                 # chunks fetched per query
+  min_score: 0.1           # similarity floor (1 - cosine distance)
+  summarize: false         # second LLM pass condensing each answer
+
+ingestion:
+  # Ingest everything under data/ at startup when the collection is empty.
+  # Set false to rely solely on POST /api/ingest.
+  ingest_on_startup: true
+  default_mode: skip       # skip | replace | append
+  max_upload_mb: 100
+  upload_subdir: uploads   # created under data/
