@@ -34,7 +34,7 @@ Start with `FIRST_PROJECT` if the goal is understanding *how* RAG works. Go stra
 
 ---
 
-## Repo structure
+## Repository structure
 
 ```
 rag-learning/
