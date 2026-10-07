@@ -2,7 +2,7 @@
 
 A hands-on progression through Retrieval-Augmented Generation — starting from a bare, framework-free RAG loop to understand the mechanics, then building a real two-endpoint service on top of what that taught. Everything runs locally via Docker (Weaviate + Ollama), with no cloud API keys anywhere.
 
-Built and run entirely from a GitHub Codespace — the original plan was a local machine, but a corporate network's SSL-inspecting security agent blocked the model registry outright (see `FIRST_PROJECT/README.md` for the full diagnosis). Codespaces turned out to be the more practical environment anyway: browser-only access, no local Docker install needed, works from a phone.
+Built and run entirely from a GitHub Codespace — the original plan was a local machine, but a corporate network's SSL-inspecting security agent blocked the model registry outright (see `FIRST_PROJECT/README.md` for the full diagnosis). Codespaces turned out to be the more practical environment anyway: browser-only access, no local Docker install needed, works from a phone as well.
 
 ---
 
