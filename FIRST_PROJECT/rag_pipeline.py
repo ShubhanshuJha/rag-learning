@@ -111,4 +111,4 @@ with weaviate.connect_to_local(additional_config=AdditionalConfig(
     print("\n--- Generated answer ---")
     print(response.generative.text)
 
-    # client.collections.delete("RagDocs")
+    # client.collections.delete("RagDocs")  # cleaning db resource
