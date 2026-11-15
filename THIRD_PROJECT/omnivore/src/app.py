@@ -157,4 +157,5 @@ def history():
 
 
 if __name__ == "__main__":
+    print("(*) Running...")
     app.run(debug=True, port=5000)
